@@ -1,14 +1,14 @@
-# Use OpenJDK base image
+# Use OpenJDK 17 slim as base
 FROM openjdk:17-jdk-slim
 
-# Set working directory inside container
+# Set working directory
 WORKDIR /app
 
-# Copy the built jar file into container
+# Copy the built JAR (works with both Maven or Gradle outputs)
 COPY target/*.jar app.jar
 
-# Expose port 8086
+# Expose port
 EXPOSE 8086
 
-# Run the application
+# Run the JAR
 ENTRYPOINT ["java", "-jar", "app.jar"]

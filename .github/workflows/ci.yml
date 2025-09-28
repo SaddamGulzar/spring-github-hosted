@@ -18,8 +18,18 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Build with Maven
-        run: mvn clean package -DskipTests
+      - name: Detect build tool and build project
+        run: |
+          if [ -f "pom.xml" ]; then
+            echo "Maven project detected"
+            mvn clean package -DskipTests
+          elif [ -f "build.gradle" ] || [ -f "build.gradle.kts" ]; then
+            echo "Gradle project detected"
+            ./gradlew clean build -x test || gradle clean build -x test
+          else
+            echo "❌ No Maven or Gradle build file found!"
+            exit 1
+          fi
 
       - name: Build Docker image
         run: docker build -t java-app:latest .
@@ -32,6 +42,7 @@ jobs:
         with:
           name: java-app
           path: java-app.tar
+          retention-days: 1  # keep artifacts only for 1 day to save storage
 
   deploy:
     needs: build
@@ -44,14 +55,30 @@ jobs:
           name: java-app
           path: .
 
-      - name: Copy Docker image to VM
+      - name: Set up SSH key
         run: |
-          scp -o StrictHostKeyChecking=no -i ~/.ssh/id_rsa java-app.tar ubuntu@100.27.198.192:/home/ubuntu/
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H ${{ secrets.VM_HOST }} >> ~/.ssh/known_hosts
 
-      - name: Load and run container on VM
+      - name: Deploy on VM
         run: |
-          ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_rsa ubuntu@100.27.198.192 << 'EOF'
-          docker load -i /home/ubuntu/java-app.tar
+          ssh -i ~/.ssh/id_rsa ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }} << 'EOF'
+          # Ensure required packages are installed
+          sudo apt-get update -y
+          sudo apt-get install -y docker.io openjdk-17-jdk maven gradle || true
+
+          # Load new image
+          docker load -i /home/${{ secrets.VM_USER }}/java-app.tar || true
+
+          # Delete old container if exists
           docker rm -f java-app || true
+
+          # Run new container
           docker run -d --name java-app -p 8086:8086 java-app:latest
+
+          # Cleanup old artifacts
+          rm -f /home/${{ secrets.VM_USER }}/java-app.tar
+          docker image prune -af
           EOF
