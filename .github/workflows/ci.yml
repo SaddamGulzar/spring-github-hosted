@@ -79,6 +79,8 @@ jobs:
             # -------------------------------
             # Build lightweight Docker image
             # -------------------------------
+            cp $JAR_FILE ./  # copy JAR to Docker build context
+
             cat > Dockerfile.temp << 'DOCKER_EOF'
             FROM openjdk:17-jdk-slim
             ARG JAR_FILE
@@ -88,16 +90,15 @@ jobs:
             ENTRYPOINT ["java","-jar","app.jar","--server.port=8086"]
             DOCKER_EOF
 
-            docker build -f Dockerfile.temp --build-arg JAR_FILE=$JAR_FILE -t spring-app:latest .
+            docker build -f Dockerfile.temp --build-arg JAR_FILE=$(basename $JAR_FILE) -t spring-app:latest .
             docker run -d --name spring-app -p 8086:8086 spring-app:latest
 
             rm Dockerfile.temp
+            rm $(basename $JAR_FILE)
 
             # -------------------------------
-            # Clean caches
+            # Clean caches safely
             # -------------------------------
-            rm -rf ~/.m2/repository || true
-            rm -rf ~/.gradle/caches/ || true
             sudo apt-get clean
           EOF
 
@@ -109,7 +110,7 @@ jobs:
       - name: Wait for app to be ready
         run: |
           echo "Waiting for app on port 8086..."
-          MAX_RETRIES=30
+          MAX_RETRIES=60  # wait up to 5 minutes
           COUNT=0
           SUCCESS=0
           until [ $COUNT -ge $MAX_RETRIES ]; do
