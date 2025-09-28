@@ -19,9 +19,9 @@ jobs:
       - name: Set up SSH key
         run: |
           mkdir -p ~/.ssh
-          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          echo "${{ secrets.VM_SSH_KEY }}" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
-          ssh-keyscan -H ${{ secrets.VM_HOST || '100.27.198.192' }} >> ~/.ssh/known_hosts
+          ssh-keyscan -H ${{ secrets.VM_IP }} >> ~/.ssh/known_hosts
 
       # Detect build tool
       - name: Detect Build Tool
@@ -59,7 +59,7 @@ jobs:
       # Deploy to VM: cleanup old container/image
       - name: Deploy to VM - cleanup
         run: |
-          ssh ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }} << 'EOF'
+          ssh -o StrictHostKeyChecking=no ${{ secrets.VM_USER }}@${{ secrets.VM_IP }} << 'EOF'
             if ! command -v docker &> /dev/null; then
               echo "Installing Docker..."
               sudo apt-get update && sudo apt-get install -y docker.io
@@ -75,12 +75,12 @@ jobs:
       # Copy Docker image to VM
       - name: Copy Docker image to VM
         run: |
-          docker save spring-app:latest | bzip2 | ssh ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }} 'bunzip2 | docker load'
+          docker save spring-app:latest | bzip2 | ssh -o StrictHostKeyChecking=no ${{ secrets.VM_USER }}@${{ secrets.VM_IP }} 'bunzip2 | docker load'
 
       # Free port 8086 on VM
       - name: Free port 8086
         run: |
-          ssh ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }} << 'EOF'
+          ssh -o StrictHostKeyChecking=no ${{ secrets.VM_USER }}@${{ secrets.VM_IP }} << 'EOF'
             echo "Checking if port 8086 is in use..."
             if lsof -i :8086; then
               echo "Port 8086 is busy. Stopping processes using it..."
@@ -93,7 +93,7 @@ jobs:
       # Run Docker container
       - name: Run Docker container
         run: |
-          ssh ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }} << 'EOF'
+          ssh -o StrictHostKeyChecking=no ${{ secrets.VM_USER }}@${{ secrets.VM_IP }} << 'EOF'
             docker run -d --name spring-app -p 8086:8086 spring-app:latest
           EOF
 
@@ -121,7 +121,7 @@ jobs:
           echo "Waiting for the app to start on port 8086..."
           MAX_RETRIES=30
           COUNT=0
-          until curl -s http://100.27.198.192:8086/actuator/health || [ $COUNT -ge $MAX_RETRIES ]; do
+          until curl -s http://${{ secrets.VM_IP }}:8086/actuator/health || [ $COUNT -ge $MAX_RETRIES ]; do
             echo "App not ready yet. Retrying in 5s..."
             sleep 5
             COUNT=$((COUNT+1))
