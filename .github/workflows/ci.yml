@@ -72,10 +72,10 @@ jobs:
             fi
           EOF
 
-      # Copy Docker image to VM
-      - name: Copy Docker image to VM
+      # Stream Docker image directly to VM
+      - name: Transfer Docker image to VM
         run: |
-          docker save spring-app:latest | bzip2 | ssh -o StrictHostKeyChecking=no ${{ secrets.VM_USER }}@${{ secrets.VM_IP }} 'bunzip2 | docker load'
+          docker save spring-app:latest | ssh -o StrictHostKeyChecking=no ${{ secrets.VM_USER }}@${{ secrets.VM_IP }} 'docker load'
 
       # Free port 8086 on VM
       - name: Free port 8086
