@@ -22,7 +22,7 @@ jobs:
 
       - name: Deploy to VM
         run: |
-          ssh -i $HOME/.ssh/id_rsa -o StrictHostKeyChecking=no ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }} << 'EOF'
+          ssh -i $HOME/.ssh/id_rsa -o StrictHostKeyChecking=no ${{ secrets.VM_USER }}@${{ secrets.VM_IP }} << 'EOF'
             set -e
             APP_NAME="spring-app"
             APP_PORT=8086
@@ -32,13 +32,13 @@ jobs:
             git fetch --all
             git reset --hard origin/main
 
-            # Check if code has changed
+            # Detect if code changed
             LAST_COMMIT_FILE=".last_deployed_commit"
             CURRENT_COMMIT=$(git rev-parse HEAD)
             if [ -f "$LAST_COMMIT_FILE" ] && [ "$(cat $LAST_COMMIT_FILE)" = "$CURRENT_COMMIT" ]; then
-              echo "No code changes detected. Skipping build."
+              echo "No code changes. Skipping build."
             else
-              echo "🐳 Building JAR..."
+              echo "Building JAR..."
               if [ -f "pom.xml" ] || [ -f "mvnw" ]; then
                 ./mvnw clean package -DskipTests
                 JAR_FILE=$(ls target/*.jar | head -n1)
@@ -50,16 +50,16 @@ jobs:
                 exit 1
               fi
 
-              echo "🛑 Stopping old container..."
+              echo "Stopping old container..."
               docker stop $APP_NAME || true
               docker rm $APP_NAME || true
 
-              echo "🧹 Cleaning old Docker resources (keep current)..."
+              echo "Cleaning old Docker resources..."
               CURRENT_IMAGE=$(docker images -q $APP_NAME:latest)
               docker ps -a --filter "name=$APP_NAME" --format "{{.ID}}" | grep -v "$(docker ps -q --filter "name=$APP_NAME")" | xargs -r docker rm -f
               docker images $APP_NAME --format "{{.ID}}" | grep -v "$CURRENT_IMAGE" | xargs -r docker rmi -f
 
-              echo "🚀 Building Docker image..."
+              echo "Building Docker image..."
               cp $JAR_FILE app.jar
               cat > Dockerfile.temp << DOCKER_EOF
               FROM eclipse-temurin:17-jdk-alpine
@@ -71,10 +71,10 @@ jobs:
               docker build -f Dockerfile.temp -t $APP_NAME:latest .
               rm Dockerfile.temp
 
-              echo "🚀 Starting container..."
+              echo "Starting container..."
               docker run -d --name $APP_NAME -p $APP_PORT:8080 $APP_NAME:latest
 
-              # Save current commit
+              # Save last deployed commit
               echo "$CURRENT_COMMIT" > $LAST_COMMIT_FILE
             fi
           EOF
@@ -90,7 +90,7 @@ jobs:
           COUNT=0
           SUCCESS=0
           until [ $COUNT -ge $MAX_RETRIES ]; do
-            if curl -s http://${{ secrets.VM_HOST }}:8086/actuator/health | grep -q '"status":"UP"'; then
+            if curl -s http://${{ secrets.VM_IP }}:8086/actuator/health | grep -q '"status":"UP"'; then
               SUCCESS=1
               break
             fi
@@ -101,7 +101,7 @@ jobs:
 
           if [ $SUCCESS -ne 1 ]; then
             echo "❌ App health check failed."
-            ssh -i $HOME/.ssh/id_rsa -o StrictHostKeyChecking=no ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }} "docker logs spring-app || true"
+            ssh -i $HOME/.ssh/id_rsa -o StrictHostKeyChecking=no ${{ secrets.VM_USER }}@${{ secrets.VM_IP }} "docker logs spring-app || true"
             exit 1
           fi
 
