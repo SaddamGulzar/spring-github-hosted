@@ -14,6 +14,12 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Debug SSH secrets
+        run: |
+          echo "VM_HOST=${{ secrets.VM_HOST }}"
+          echo "VM_USER=${{ secrets.VM_USER }}"
+          # VM_SSH_KEY is secret, do not print
+
       - name: Setup SSH
         run: |
           mkdir -p $HOME/.ssh
@@ -82,7 +88,7 @@ jobs:
             echo "🚀 Starting container..."
             docker run -d --name $APP_NAME -p $APP_PORT:8080 $APP_NAME:latest
 
-            # Check if container is running
+            # Verify container is running
             if [ "$(docker inspect -f '{{.State.Status}}' $APP_NAME)" != "running" ]; then
               echo "❌ Container failed to start. Logs:"
               docker logs $APP_NAME || true
@@ -100,7 +106,7 @@ jobs:
       - name: Wait for app to be ready
         run: |
           echo "⏳ Waiting for app to be healthy on port 8086..."
-          MAX_RETRIES=40
+          MAX_RETRIES=20
           COUNT=0
           SUCCESS=0
           until [ $COUNT -ge $MAX_RETRIES ]; do
