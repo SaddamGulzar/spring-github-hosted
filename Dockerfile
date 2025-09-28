@@ -1,10 +1,10 @@
 FROM openjdk:17-jdk-slim
 
+ARG JAR_FILE
 WORKDIR /app
 
-COPY build/libs/*.jar app.jar
+COPY ${JAR_FILE} app.jar
 
-# App runs on port 8086
 EXPOSE 8086
 
 ENTRYPOINT ["java","-jar","app.jar","--server.port=8086"]
