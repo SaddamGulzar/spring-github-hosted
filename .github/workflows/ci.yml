@@ -1,4 +1,4 @@
-name: CI/CD Pipeline
+name: CI/CD Optimized
 
 on:
   push:
@@ -14,88 +14,69 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Debug SSH secrets
-        run: |
-          echo "VM_HOST=${{ secrets.VM_HOST }}"
-          echo "VM_USER=${{ secrets.VM_USER }}"
-          # VM_SSH_KEY is secret, do not print
-
       - name: Setup SSH
         run: |
           mkdir -p $HOME/.ssh
           echo "${{ secrets.VM_SSH_KEY }}" > $HOME/.ssh/id_rsa
           chmod 600 $HOME/.ssh/id_rsa
 
-      - name: Build & Deploy on VM
+      - name: Deploy to VM
         run: |
           ssh -i $HOME/.ssh/id_rsa -o StrictHostKeyChecking=no ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }} << 'EOF'
             set -e
             APP_NAME="spring-app"
             APP_PORT=8086
-            PROJECT_DIR=~/spring-app
+            PROJECT_DIR=~/spring-github-hosted
 
-            echo "🚀 Preparing project..."
-            if [ ! -d "$PROJECT_DIR" ]; then
-              git clone git@github.com:<your-username>/<your-repo>.git $PROJECT_DIR
-            fi
             cd $PROJECT_DIR
             git fetch --all
             git reset --hard origin/main
 
-            # Make wrappers executable
-            [ -f "./mvnw" ] && chmod +x ./mvnw
-            [ -f "./gradlew" ] && chmod +x ./gradlew
-
-            echo "🐳 Building JAR..."
-            if [ -f "pom.xml" ] || [ -f "mvnw" ]; then
-              ./mvnw clean package -DskipTests
-              JAR_FILE=$(ls target/*.jar | head -n 1)
-            elif [ -f "build.gradle" ] || [ -f "gradlew" ]; then
-              ./gradlew clean build -x test
-              JAR_FILE=$(ls build/libs/*.jar | head -n 1)
+            # Check if code has changed
+            LAST_COMMIT_FILE=".last_deployed_commit"
+            CURRENT_COMMIT=$(git rev-parse HEAD)
+            if [ -f "$LAST_COMMIT_FILE" ] && [ "$(cat $LAST_COMMIT_FILE)" = "$CURRENT_COMMIT" ]; then
+              echo "No code changes detected. Skipping build."
             else
-              echo "No Maven/Gradle build file found!"
-              exit 1
+              echo "🐳 Building JAR..."
+              if [ -f "pom.xml" ] || [ -f "mvnw" ]; then
+                ./mvnw clean package -DskipTests
+                JAR_FILE=$(ls target/*.jar | head -n1)
+              elif [ -f "build.gradle" ] || [ -f "gradlew" ]; then
+                ./gradlew clean build -x test
+                JAR_FILE=$(ls build/libs/*.jar | head -n1)
+              else
+                echo "❌ No build file found!"
+                exit 1
+              fi
+
+              echo "🛑 Stopping old container..."
+              docker stop $APP_NAME || true
+              docker rm $APP_NAME || true
+
+              echo "🧹 Cleaning old Docker resources (keep current)..."
+              CURRENT_IMAGE=$(docker images -q $APP_NAME:latest)
+              docker ps -a --filter "name=$APP_NAME" --format "{{.ID}}" | grep -v "$(docker ps -q --filter "name=$APP_NAME")" | xargs -r docker rm -f
+              docker images $APP_NAME --format "{{.ID}}" | grep -v "$CURRENT_IMAGE" | xargs -r docker rmi -f
+
+              echo "🚀 Building Docker image..."
+              cp $JAR_FILE app.jar
+              cat > Dockerfile.temp << DOCKER_EOF
+              FROM eclipse-temurin:17-jdk-alpine
+              WORKDIR /app
+              COPY app.jar app.jar
+              EXPOSE $APP_PORT
+              ENTRYPOINT ["java","-jar","app.jar","--server.port=$APP_PORT"]
+              DOCKER_EOF
+              docker build -f Dockerfile.temp -t $APP_NAME:latest .
+              rm Dockerfile.temp
+
+              echo "🚀 Starting container..."
+              docker run -d --name $APP_NAME -p $APP_PORT:8080 $APP_NAME:latest
+
+              # Save current commit
+              echo "$CURRENT_COMMIT" > $LAST_COMMIT_FILE
             fi
-            echo "Built JAR: $JAR_FILE"
-
-            echo "🛑 Stopping old container if exists..."
-            docker stop $APP_NAME || true
-            docker rm $APP_NAME || true
-
-            echo "🧹 Cleaning old Docker resources (except latest)..."
-            CURRENT_IMAGE=$(docker images -q $APP_NAME:latest)
-            CURRENT_CONTAINER=$(docker ps -q --filter "name=$APP_NAME")
-            docker ps -a --filter "name=$APP_NAME" --format "{{.ID}}" | grep -v "$CURRENT_CONTAINER" | xargs -r docker rm -f
-            docker images $APP_NAME --format "{{.ID}}" | grep -v "$CURRENT_IMAGE" | xargs -r docker rmi -f
-            docker image prune -f
-            docker container prune -f
-            docker volume prune -f
-            docker network prune -f
-
-            echo "🚀 Building Docker image..."
-            cp $JAR_FILE app.jar
-            cat > Dockerfile.temp << DOCKER_EOF
-            FROM eclipse-temurin:17-jdk-alpine
-            WORKDIR /app
-            COPY app.jar app.jar
-            EXPOSE $APP_PORT
-            ENTRYPOINT ["java","-jar","app.jar","--server.port=$APP_PORT"]
-            DOCKER_EOF
-            docker build -f Dockerfile.temp -t $APP_NAME:latest .
-            rm Dockerfile.temp
-
-            echo "🚀 Starting container..."
-            docker run -d --name $APP_NAME -p $APP_PORT:8080 $APP_NAME:latest
-
-            # Verify container is running
-            if [ "$(docker inspect -f '{{.State.Status}}' $APP_NAME)" != "running" ]; then
-              echo "❌ Container failed to start. Logs:"
-              docker logs $APP_NAME || true
-              exit 1
-            fi
-
-            echo "✅ Deploy completed. Container is running."
           EOF
 
   test:
@@ -103,10 +84,9 @@ jobs:
     needs: deploy
 
     steps:
-      - name: Wait for app to be ready
+      - name: Quick Health Check
         run: |
-          echo "⏳ Waiting for app to be healthy on port 8086..."
-          MAX_RETRIES=20
+          MAX_RETRIES=10
           COUNT=0
           SUCCESS=0
           until [ $COUNT -ge $MAX_RETRIES ]; do
@@ -114,13 +94,13 @@ jobs:
               SUCCESS=1
               break
             fi
-            echo "App not ready yet. Retrying in 5s..."
+            echo "Waiting for app... ($COUNT/$MAX_RETRIES)"
             COUNT=$((COUNT+1))
             sleep 5
           done
 
           if [ $SUCCESS -ne 1 ]; then
-            echo "❌ App failed to start. Fetching container logs..."
+            echo "❌ App health check failed."
             ssh -i $HOME/.ssh/id_rsa -o StrictHostKeyChecking=no ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }} "docker logs spring-app || true"
             exit 1
           fi
