@@ -1,84 +1,103 @@
-name: Java CI with Docker
+name: Java CI/CD with Docker
 
 on:
   push:
     branches: ["main"]
 
 jobs:
-  build:
+  build-deploy:
     runs-on: ubuntu-latest
 
     steps:
+      # Checkout code
       - name: Checkout repository
         uses: actions/checkout@v3
 
-      - name: Set up JDK 17
-        uses: actions/setup-java@v3
-        with:
-          distribution: 'temurin'
-          java-version: '17'
-
-      - name: Detect build tool and build project
-        run: |
-          if [ -f "pom.xml" ]; then
-            echo "Maven project detected"
-            mvn clean package -DskipTests
-          elif [ -f "build.gradle" ] || [ -f "build.gradle.kts" ]; then
-            echo "Gradle project detected"
-            ./gradlew clean build -x test || gradle clean build -x test
-          else
-            echo "❌ No Maven or Gradle build file found!"
-            exit 1
-          fi
-
-      - name: Build Docker image
-        run: docker build -t java-app:latest .
-
-      - name: Save Docker image as artifact
-        run: docker save java-app:latest -o java-app.tar
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: java-app
-          path: java-app.tar
-          retention-days: 1  # keep artifacts only for 1 day to save storage
-
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Download artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: java-app
-          path: .
-
+      # Setup SSH
       - name: Set up SSH key
         run: |
           mkdir -p ~/.ssh
           echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
-          ssh-keyscan -H ${{ secrets.VM_HOST }} >> ~/.ssh/known_hosts
+          ssh-keyscan -H ${{ secrets.VM_HOST || '100.27.198.192' }} >> ~/.ssh/known_hosts
 
-      - name: Deploy on VM
+      # Detect build tool
+      - name: Detect Build Tool
+        id: detect-build
         run: |
-          ssh -i ~/.ssh/id_rsa ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }} << 'EOF'
-          # Ensure required packages are installed
-          sudo apt-get update -y
-          sudo apt-get install -y docker.io openjdk-17-jdk maven gradle || true
+          if [ -f "mvnw" ] || [ -f "pom.xml" ]; then
+            echo "tool=maven" >> $GITHUB_OUTPUT
+          elif [ -f "gradlew" ] || [ -f "build.gradle" ] || [ -f "build.gradle.kts" ]; then
+            echo "tool=gradle" >> $GITHUB_OUTPUT
+          else
+            echo "No Maven/Gradle build file found!"
+            exit 1
+          fi
 
-          # Load new image
-          docker load -i /home/${{ secrets.VM_USER }}/java-app.tar || true
+      # Build Java app
+      - name: Build Java Application
+        run: |
+          if [ "${{ steps.detect-build.outputs.tool }}" = "maven" ]; then
+            mvn clean package -DskipTests
+          else
+            ./gradlew clean build -x test
+          fi
 
-          # Delete old container if exists
-          docker rm -f java-app || true
+      # Build Docker image
+      - name: Build Docker Image
+        run: |
+          docker build -t spring-app:latest .
 
-          # Run new container
-          docker run -d --name java-app -p 8086:8086 java-app:latest
+      # Deploy to VM: cleanup old container/image
+      - name: Deploy to VM - cleanup
+        run: |
+          ssh ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }} << 'EOF'
+            # Install Docker if missing
+            if ! command -v docker &> /dev/null; then
+              echo "Installing Docker..."
+              sudo apt-get update && sudo apt-get install -y docker.io
+            fi
 
-          # Cleanup old artifacts
-          rm -f /home/${{ secrets.VM_USER }}/java-app.tar
-          docker image prune -af
+            # Stop & remove old container if exists
+            if [ "$(docker ps -aq -f name=spring-app)" ]; then
+              docker rm -f spring-app || true
+            fi
+
+            # Remove old image if exists
+            if [ "$(docker images -q spring-app:latest)" ]; then
+              docker rmi -f spring-app:latest || true
+            fi
           EOF
+
+      # Copy Docker image to VM
+      - name: Copy Docker image to VM
+        run: |
+          docker save spring-app:latest | bzip2 | ssh ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }} 'bunzip2 | docker load'
+
+      # Free port 8086 on VM
+      - name: Free port 8086
+        run: |
+          ssh ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }} << 'EOF'
+            echo "Checking if port 8086 is in use..."
+            if lsof -i :8086; then
+              echo "Port 8086 is busy. Stopping processes using it..."
+              sudo lsof -t -i :8086 | xargs sudo kill -9 || true
+            else
+              echo "Port 8086 is free."
+            fi
+          EOF
+
+      # Run Docker container
+      - name: Run Docker container
+        run: |
+          ssh ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }} << 'EOF'
+            docker run -d --name spring-app -p 8086:8086 spring-app:latest
+          EOF
+
+      # Cleanup build caches locally
+      - name: Cleanup build caches
+        run: |
+          echo "Cleaning Maven/Gradle caches to save storage..."
+          rm -rf ~/.m2/repository || true
+          rm -rf ~/.gradle/caches/ || true
+          sudo apt-get clean

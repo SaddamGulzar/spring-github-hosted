@@ -1,14 +1,10 @@
-# Use OpenJDK 17 slim as base
 FROM openjdk:17-jdk-slim
 
-# Set working directory
 WORKDIR /app
 
-# Copy the built JAR (works with both Maven or Gradle outputs)
-COPY target/*.jar app.jar
+COPY build/libs/*.jar app.jar
 
-# Expose port
+# App runs on port 8086
 EXPOSE 8086
 
-# Run the JAR
-ENTRYPOINT ["java", "-jar", "app.jar"]
+ENTRYPOINT ["java","-jar","app.jar","--server.port=8086"]
