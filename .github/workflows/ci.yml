@@ -34,18 +34,20 @@ jobs:
           else
             echo "No Maven/Gradle build file found!"
             exit 1
-          fi
 
-      # Build Java app
+      # Build Java app (fixed)
       - name: Build Java Application
         id: build-app
         run: |
           if [ "${{ steps.detect-build.outputs.tool }}" = "maven" ]; then
             mvn clean package -DskipTests
-            echo "JAR_PATH=target/$(ls target/*.jar | head -n 1)" >> $GITHUB_OUTPUT
+            JAR_FILE=$(ls target/*.jar | head -n 1)
+            echo "JAR_PATH=$JAR_FILE" >> $GITHUB_OUTPUT
           else
             ./gradlew clean build -x test
-            echo "JAR_PATH=build/libs/$(ls build/libs/*.jar | head -n 1)" >> $GITHUB_OUTPUT
+            JAR_FILE=$(ls build/libs/*.jar | head -n 1)
+            echo "JAR_PATH=$JAR_FILE" >> $GITHUB_OUTPUT
+          fi
 
       # Build Docker image
       - name: Build Docker Image
