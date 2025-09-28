@@ -1,10 +1,9 @@
-name: CI/CD Optimized
+name: Java CI/CD with Docker
 
 on:
   push:
     branches:
       - main
-  workflow_dispatch:
 
 jobs:
   deploy:
@@ -32,9 +31,9 @@ jobs:
             git fetch --all
             git reset --hard origin/main
 
-            # Detect if code changed
             LAST_COMMIT_FILE=".last_deployed_commit"
             CURRENT_COMMIT=$(git rev-parse HEAD)
+
             if [ -f "$LAST_COMMIT_FILE" ] && [ "$(cat $LAST_COMMIT_FILE)" = "$CURRENT_COMMIT" ]; then
               echo "No code changes. Skipping build."
             else
@@ -74,7 +73,6 @@ DOCKER_EOF
               echo "Starting container..."
               docker run -d --name $APP_NAME -p $APP_PORT:8080 $APP_NAME:latest
 
-              # Save last deployed commit
               echo "$CURRENT_COMMIT" > $LAST_COMMIT_FILE
             fi
           EOF
