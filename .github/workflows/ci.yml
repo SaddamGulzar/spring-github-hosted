@@ -26,7 +26,7 @@ jobs:
           ssh -o StrictHostKeyChecking=no ${{ secrets.VM_USER }}@${{ secrets.VM_IP }} << 'EOF'
             set -e
 
-            # Make sure SSH key exists for GitHub
+            # Ensure SSH key exists for GitHub
             mkdir -p ~/.ssh
             echo "${{ secrets.VM_SSH_KEY }}" > ~/.ssh/id_rsa
             chmod 600 ~/.ssh/id_rsa
@@ -39,7 +39,7 @@ jobs:
               sudo apt-get install -y docker.io
             fi
 
-            # Navigate to project directory (clone if not exists)
+            # Clone the repo if it doesn't exist
             if [ ! -d spring-github-hosted ]; then
               git clone git@github.com:SaddamGulzar/spring-github-hosted.git spring-github-hosted
             fi
