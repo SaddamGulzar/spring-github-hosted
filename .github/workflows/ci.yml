@@ -11,14 +11,24 @@ jobs:
     steps:
       - name: Setup SSH Key
         run: |
+          # Create .ssh folder with correct permissions
           mkdir -p ~/.ssh
-          echo "${{ secrets.VM_SSH_KEY }}" > ~/.ssh/id_rsa
+          chmod 700 ~/.ssh
+
+          # Write private key from GitHub Secrets and remove any extra carriage returns
+          echo "${{ secrets.VM_SSH_KEY }}" | tr -d '\r' > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
+
+          # Add VM to known_hosts to avoid interactive prompt
           ssh-keyscan -H ${{ secrets.VM_IP }} >> ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+
+          # Optional: test SSH connection
+          ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_rsa ${{ secrets.VM_USER }}@${{ secrets.VM_IP }} "echo 'SSH connection successful'"
 
       - name: Build & Deploy on VM
         run: |
-          ssh -o StrictHostKeyChecking=no ${{ secrets.VM_USER }}@${{ secrets.VM_IP }} << 'EOF'
+          ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_rsa ${{ secrets.VM_USER }}@${{ secrets.VM_IP }} << 'EOF'
             set -e
 
             # -------------------------------
@@ -109,7 +119,7 @@ jobs:
 
           if [ $SUCCESS -ne 1 ]; then
             echo "App did not start in time. Fetching container logs..."
-            ssh -o StrictHostKeyChecking=no ${{ secrets.VM_USER }}@${{ secrets.VM_IP }} "docker logs spring-app || true"
+            ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_rsa ${{ secrets.VM_USER }}@${{ secrets.VM_IP }} "docker logs spring-app || true"
             exit 1
           fi
 
@@ -117,7 +127,7 @@ jobs:
 
       - name: Run tests on VM
         run: |
-          ssh -o StrictHostKeyChecking=no ${{ secrets.VM_USER }}@${{ secrets.VM_IP }} << EOF
+          ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_rsa ${{ secrets.VM_USER }}@${{ secrets.VM_IP }} << EOF
             cd ~/spring-github-hosted
             if [ -f "pom.xml" ]; then
               ./mvnw test
