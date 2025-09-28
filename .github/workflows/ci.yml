@@ -11,14 +11,22 @@ jobs:
     steps:
       - name: Setup SSH Key
         run: |
-          mkdir -p ~/.ssh
-          echo "${{ secrets.VM_SSH_KEY }}" > ~/.ssh/id_rsa
-          chmod 600 ~/.ssh/id_rsa
-          ssh-keyscan -H ${{ secrets.VM_IP }} >> ~/.ssh/known_hosts
+          SSH_DIR=/home/runner/.ssh
+          mkdir -p $SSH_DIR
+          chmod 700 $SSH_DIR
+
+          echo "${{ secrets.VM_SSH_KEY }}" | tr -d '\r' > $SSH_DIR/id_rsa
+          chmod 600 $SSH_DIR/id_rsa
+
+          ssh-keyscan -H ${{ secrets.VM_IP }} >> $SSH_DIR/known_hosts
+          chmod 644 $SSH_DIR/known_hosts
+
+          # Optional: test SSH connection
+          ssh -i $SSH_DIR/id_rsa -o StrictHostKeyChecking=no ${{ secrets.VM_USER }}@${{ secrets.VM_IP }} "echo SSH connection successful"
 
       - name: Build & Deploy on VM
         run: |
-          ssh -o StrictHostKeyChecking=no ${{ secrets.VM_USER }}@${{ secrets.VM_IP }} << 'EOF'
+          ssh -i /home/runner/.ssh/id_rsa -o StrictHostKeyChecking=no ${{ secrets.VM_USER }}@${{ secrets.VM_IP }} << 'EOF'
             set -e
 
             # -------------------------------
@@ -65,39 +73,24 @@ jobs:
             echo "JAR built at: $JAR_FILE"
 
             # -------------------------------
-            # Stop old spring-app container if exists
+            # Stop old spring-app container & free port
             # -------------------------------
-            if docker ps -aq -f name=spring-app; then
-              docker rm -f spring-app || true
-            fi
-
-            # Free port 8086 if in use
+            docker rm -f spring-app || true
             if lsof -t -i :8086; then
               sudo lsof -t -i :8086 | xargs sudo kill -9 || true
             fi
 
             # -------------------------------
-            # Build lightweight Docker image
+            # Copy JAR to Docker context, build & run Docker image
             # -------------------------------
-            cat > Dockerfile.temp << 'DOCKER_EOF'
-            FROM openjdk:17-jdk-slim
-            ARG JAR_FILE
-            WORKDIR /app
-            COPY ${JAR_FILE} app.jar
-            EXPOSE 8086
-            ENTRYPOINT ["java","-jar","app.jar","--server.port=8086"]
-            DOCKER_EOF
-
-            docker build -f Dockerfile.temp --build-arg JAR_FILE=$JAR_FILE -t spring-app:latest .
+            cp $JAR_FILE ./
+            docker build --build-arg JAR_FILE=$(basename $JAR_FILE) -t spring-app:latest .
             docker run -d --name spring-app -p 8086:8086 spring-app:latest
-
-            rm Dockerfile.temp
+            rm $(basename $JAR_FILE)
 
             # -------------------------------
-            # Clean caches
+            # Clean up
             # -------------------------------
-            rm -rf ~/.m2/repository || true
-            rm -rf ~/.gradle/caches/ || true
             sudo apt-get clean
           EOF
 
@@ -106,10 +99,22 @@ jobs:
     needs: build-deploy
 
     steps:
+      - name: Setup SSH Key for Test Job
+        run: |
+          SSH_DIR=/home/runner/.ssh
+          mkdir -p $SSH_DIR
+          chmod 700 $SSH_DIR
+
+          echo "${{ secrets.VM_SSH_KEY }}" | tr -d '\r' > $SSH_DIR/id_rsa
+          chmod 600 $SSH_DIR/id_rsa
+
+          ssh-keyscan -H ${{ secrets.VM_IP }} >> $SSH_DIR/known_hosts
+          chmod 644 $SSH_DIR/known_hosts
+
       - name: Wait for app to be ready
         run: |
           echo "Waiting for app on port 8086..."
-          MAX_RETRIES=30
+          MAX_RETRIES=60
           COUNT=0
           SUCCESS=0
           until [ $COUNT -ge $MAX_RETRIES ]; do
@@ -124,19 +129,19 @@ jobs:
 
           if [ $SUCCESS -ne 1 ]; then
             echo "App did not start in time. Fetching container logs..."
-            ssh -o StrictHostKeyChecking=no ${{ secrets.VM_USER }}@${{ secrets.VM_IP }} "docker logs spring-app || true"
+            ssh -i /home/runner/.ssh/id_rsa -o StrictHostKeyChecking=no ${{ secrets.VM_USER }}@${{ secrets.VM_IP }} "docker logs spring-app || true"
             exit 1
           fi
 
           echo "App is up and running!"
 
-      #  - name: Run tests on VM
-      #    run: |
-      #     ssh -o StrictHostKeyChecking=no ${{ secrets.VM_USER }}@${{ secrets.VM_IP }} << EOF
+      # - name: Run tests on VM
+      #   run: |
+      #     ssh -i /home/runner/.ssh/id_rsa -o StrictHostKeyChecking=no ${{ secrets.VM_USER }}@${{ secrets.VM_IP }} << EOF
       #       cd ~/spring-github-hosted
       #       if [ -f "pom.xml" ]; then
       #         ./mvnw test
       #       elif [ -f "build.gradle" ] || [ -f "build.gradle.kts" ]; then
       #         ./gradlew test
       #       fi
-      #     EOF
+          EOF
