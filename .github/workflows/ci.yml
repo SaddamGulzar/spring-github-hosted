@@ -41,7 +41,7 @@ jobs:
 
             # Navigate to project directory (clone if not exists)
             if [ ! -d spring-github-hosted ]; then
-              git clone git@github.com:username/spring-github-hosted.git spring-github-hosted
+              git clone git@github.com:SaddamGulzar/spring-github-hosted.git spring-github-hosted
             fi
             cd spring-github-hosted
             git fetch --all
