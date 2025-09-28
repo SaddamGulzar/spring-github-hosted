@@ -3,7 +3,6 @@ FROM openjdk:17-jdk-slim
 
 WORKDIR /app
 
-# Copy the JAR file built on VM
 ARG JAR_FILE
 COPY ${JAR_FILE} app.jar
 

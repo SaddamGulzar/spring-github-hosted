@@ -12,7 +12,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v3
 
-      # Setup SSH for VM
       - name: Set up SSH key
         run: |
           mkdir -p ~/.ssh
@@ -20,38 +19,27 @@ jobs:
           chmod 600 ~/.ssh/id_rsa
           ssh-keyscan -H ${{ secrets.VM_IP }} >> ~/.ssh/known_hosts
 
-      # Build and deploy on VM
       - name: Build and Deploy on VM
         run: |
           ssh -o StrictHostKeyChecking=no ${{ secrets.VM_USER }}@${{ secrets.VM_IP }} << EOF
             set -e
 
-            # Install OpenJDK 17 if not installed
+            # Install Java if missing
             if ! command -v java &> /dev/null; then
-              echo "Installing OpenJDK 17..."
               sudo apt-get update
               sudo apt-get install -y openjdk-17-jdk
             fi
-
-            # Set JAVA_HOME and PATH
             export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
             export PATH=\$JAVA_HOME/bin:\$PATH
             java -version
 
-            # Ensure SSH key exists for GitHub
-            mkdir -p ~/.ssh
-            echo "${{ secrets.VM_SSH_KEY }}" > ~/.ssh/id_rsa
-            chmod 600 ~/.ssh/id_rsa
-            ssh-keyscan github.com >> ~/.ssh/known_hosts
-
-            # Install Docker if not installed
+            # Install Docker if missing
             if ! command -v docker &> /dev/null; then
-              echo "Installing Docker..."
               sudo apt-get update
               sudo apt-get install -y docker.io
             fi
 
-            # Clone the repo if it doesn't exist
+            # Clone repo if missing
             if [ ! -d spring-github-hosted ]; then
               git clone git@github.com:SaddamGulzar/spring-github-hosted.git spring-github-hosted
             fi
@@ -60,20 +48,14 @@ jobs:
             git reset --hard origin/main
 
             # Make wrappers executable
-            if [ -f "./mvnw" ]; then
-              chmod +x ./mvnw
-            fi
-            if [ -f "./gradlew" ]; then
-              chmod +x ./gradlew
-            fi
+            [ -f "./mvnw" ] && chmod +x ./mvnw
+            [ -f "./gradlew" ] && chmod +x ./gradlew
 
-            # Detect build tool and build JAR
+            # Build JAR
             if [ -f "pom.xml" ]; then
-              echo "Using Maven"
               ./mvnw clean package -DskipTests
               JAR_FILE=\$(ls target/*.jar | head -n 1)
             elif [ -f "build.gradle" ] || [ -f "build.gradle.kts" ]; then
-              echo "Using Gradle"
               ./gradlew clean build -x test
               JAR_FILE=\$(ls build/libs/*.jar | head -n 1)
             else
@@ -81,7 +63,9 @@ jobs:
               exit 1
             fi
 
-            # Stop & remove old container
+            echo "Using JAR: \$JAR_FILE"
+
+            # Remove old container if exists
             if [ "\$(docker ps -aq -f name=spring-app)" ]; then
               docker rm -f spring-app || true
             fi
@@ -99,8 +83,9 @@ jobs:
               sudo lsof -t -i :8086 | xargs sudo kill -9 || true
             fi
 
-            # Run Docker container
-            docker run -d --name spring-app -p 8086:8086 spring-app:latest
+            # Run container with port 8086
+            docker run -d --name spring-app -p 8086:8086 -e SERVER_PORT=8086 spring-app:latest || \
+            (echo "Container failed to start. Logs:" && docker logs spring-app && exit 1)
           EOF
 
   test:
@@ -119,7 +104,8 @@ jobs:
             COUNT=$((COUNT+1))
           done
           if [ $COUNT -ge $MAX_RETRIES ]; then
-            echo "App did not start in time."
+            echo "App did not start in time. Fetching container logs..."
+            ssh -o StrictHostKeyChecking=no ${{ secrets.VM_USER }}@${{ secrets.VM_IP }} "docker logs spring-app || true"
             exit 1
           fi
           echo "App is up and running!"
