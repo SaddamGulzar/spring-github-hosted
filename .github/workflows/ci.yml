@@ -26,6 +26,10 @@ jobs:
           ssh -o StrictHostKeyChecking=no ${{ secrets.VM_USER }}@${{ secrets.VM_IP }} << 'EOF'
             set -e
 
+            # Set JAVA_HOME for Maven/Gradle
+            export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+            export PATH=$JAVA_HOME/bin:$PATH
+
             # Ensure SSH key exists for GitHub
             mkdir -p ~/.ssh
             echo "${{ secrets.VM_SSH_KEY }}" > ~/.ssh/id_rsa
