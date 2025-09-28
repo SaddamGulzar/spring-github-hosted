@@ -16,22 +16,19 @@ jobs:
 
       - name: Setup SSH
         run: |
-          mkdir -p ~/.ssh
-          echo "${{ secrets.VM_SSH_KEY }}" > ~/.ssh/id_rsa
-          chmod 600 ~/.ssh/id_rsa
-          ssh-keyscan -H ${{ secrets.VM_HOST }} >> ~/.ssh/known_hosts
+          mkdir -p $HOME/.ssh
+          echo "${{ secrets.VM_SSH_KEY }}" > $HOME/.ssh/id_rsa
+          chmod 600 $HOME/.ssh/id_rsa
 
       - name: Build & Deploy on VM
         run: |
-          ssh -i ~/.ssh/id_rsa ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }} << 'EOF'
+          ssh -i $HOME/.ssh/id_rsa -o StrictHostKeyChecking=no ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }} << 'EOF'
             set -e
             APP_NAME="spring-app"
             APP_PORT=8086
             PROJECT_DIR=~/spring-app
 
-            # -------------------------------
-            # Prepare project
-            # -------------------------------
+            echo "🚀 Preparing project..."
             if [ ! -d "$PROJECT_DIR" ]; then
               git clone git@github.com:<your-username>/<your-repo>.git $PROJECT_DIR
             fi
@@ -43,9 +40,7 @@ jobs:
             [ -f "./mvnw" ] && chmod +x ./mvnw
             [ -f "./gradlew" ] && chmod +x ./gradlew
 
-            # -------------------------------
-            # Build JAR
-            # -------------------------------
+            echo "🐳 Building JAR..."
             if [ -f "pom.xml" ] || [ -f "mvnw" ]; then
               ./mvnw clean package -DskipTests
               JAR_FILE=$(ls target/*.jar | head -n 1)
@@ -58,15 +53,21 @@ jobs:
             fi
             echo "Built JAR: $JAR_FILE"
 
-            # -------------------------------
-            # Stop old container
-            # -------------------------------
+            echo "🛑 Stopping old container if exists..."
             docker stop $APP_NAME || true
             docker rm $APP_NAME || true
 
-            # -------------------------------
-            # Build Docker image
-            # -------------------------------
+            echo "🧹 Cleaning old Docker resources (except latest)..."
+            CURRENT_IMAGE=$(docker images -q $APP_NAME:latest)
+            CURRENT_CONTAINER=$(docker ps -q --filter "name=$APP_NAME")
+            docker ps -a --filter "name=$APP_NAME" --format "{{.ID}}" | grep -v "$CURRENT_CONTAINER" | xargs -r docker rm -f
+            docker images $APP_NAME --format "{{.ID}}" | grep -v "$CURRENT_IMAGE" | xargs -r docker rmi -f
+            docker image prune -f
+            docker container prune -f
+            docker volume prune -f
+            docker network prune -f
+
+            echo "🚀 Building Docker image..."
             cp $JAR_FILE app.jar
             cat > Dockerfile.temp << DOCKER_EOF
             FROM eclipse-temurin:17-jdk-alpine
@@ -75,30 +76,20 @@ jobs:
             EXPOSE $APP_PORT
             ENTRYPOINT ["java","-jar","app.jar","--server.port=$APP_PORT"]
             DOCKER_EOF
-
             docker build -f Dockerfile.temp -t $APP_NAME:latest .
             rm Dockerfile.temp
 
-            # -------------------------------
-            # Start new container
-            # -------------------------------
+            echo "🚀 Starting container..."
             docker run -d --name $APP_NAME -p $APP_PORT:8080 $APP_NAME:latest
 
+            # Check if container is running
+            if [ "$(docker inspect -f '{{.State.Status}}' $APP_NAME)" != "running" ]; then
+              echo "❌ Container failed to start. Logs:"
+              docker logs $APP_NAME || true
+              exit 1
+            fi
+
             echo "✅ Deploy completed. Container is running."
-            
-            # -------------------------------
-            # Cleanup old images & containers
-            # -------------------------------
-            CURRENT_IMAGE=$(docker images -q $APP_NAME:latest)
-            CURRENT_CONTAINER=$(docker ps -q --filter "name=$APP_NAME")
-
-            docker ps -a --filter "name=$APP_NAME" --format "{{.ID}}" | grep -v "$CURRENT_CONTAINER" | xargs -r docker rm -f
-            docker images $APP_NAME --format "{{.ID}}" | grep -v "$CURRENT_IMAGE" | xargs -r docker rmi -f
-
-            docker image prune -f
-            docker container prune -f
-            docker volume prune -f
-            docker network prune -f
           EOF
 
   test:
@@ -108,7 +99,7 @@ jobs:
     steps:
       - name: Wait for app to be ready
         run: |
-          echo "Waiting for app on port 8086..."
+          echo "⏳ Waiting for app to be healthy on port 8086..."
           MAX_RETRIES=40
           COUNT=0
           SUCCESS=0
@@ -124,7 +115,7 @@ jobs:
 
           if [ $SUCCESS -ne 1 ]; then
             echo "❌ App failed to start. Fetching container logs..."
-            ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_rsa ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }} "docker logs spring-app || true"
+            ssh -i $HOME/.ssh/id_rsa -o StrictHostKeyChecking=no ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }} "docker logs spring-app || true"
             exit 1
           fi
 
