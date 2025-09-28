@@ -1,4 +1,4 @@
-name: Java CI/CD with Docker (Safe Deployment)
+name: Java CI/CD with Docker (VM-Build Only)
 
 on:
   push:
@@ -9,9 +9,6 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v3
-
       - name: Setup SSH Key
         run: |
           mkdir -p ~/.ssh
@@ -25,25 +22,16 @@ jobs:
             set -e
 
             # -------------------------------
-            # Install required packages if missing
+            # Install required packages
             # -------------------------------
             command -v wget >/dev/null || sudo apt-get install -y wget
             command -v curl >/dev/null || sudo apt-get install -y curl
             command -v git >/dev/null || sudo apt-get install -y git
             command -v java >/dev/null || sudo apt-get install -y openjdk-17-jdk
+            command -v docker >/dev/null || (curl -fsSL https://get.docker.com -o get-docker.sh && sh get-docker.sh && sudo usermod -aG docker $USER)
 
             export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
             export PATH=$JAVA_HOME/bin:$PATH
-
-            # -------------------------------
-            # Install Docker safely
-            # -------------------------------
-            if ! command -v docker &> /dev/null; then
-              echo "Installing Docker..."
-              curl -fsSL https://get.docker.com -o get-docker.sh
-              sh get-docker.sh
-              sudo usermod -aG docker $USER
-            fi
 
             # -------------------------------
             # Prepare project directory
@@ -77,31 +65,36 @@ jobs:
             echo "JAR built at: $JAR_FILE"
 
             # -------------------------------
-            # Cleanup old spring-app container/image only
+            # Stop old spring-app container if exists
             # -------------------------------
             if docker ps -aq -f name=spring-app; then
               docker rm -f spring-app || true
             fi
-            if docker images -q spring-app:latest; then
-              docker rmi -f spring-app:latest || true
-            fi
 
-            # -------------------------------
             # Free port 8086 if in use
-            # -------------------------------
             if lsof -t -i :8086; then
               sudo lsof -t -i :8086 | xargs sudo kill -9 || true
             fi
 
             # -------------------------------
-            # Build Docker image and run container
+            # Build lightweight Docker image
             # -------------------------------
-            docker build --build-arg JAR_FILE=$JAR_FILE -t spring-app:latest .
-            docker run -d --name spring-app -p 8086:8086 spring-app:latest || \
-            (echo "Container failed. Logs:" && docker logs spring-app && exit 1)
+            cat > Dockerfile.temp << 'DOCKER_EOF'
+            FROM openjdk:17-jdk-slim
+            ARG JAR_FILE
+            WORKDIR /app
+            COPY ${JAR_FILE} app.jar
+            EXPOSE 8086
+            ENTRYPOINT ["java","-jar","app.jar","--server.port=8086"]
+            DOCKER_EOF
+
+            docker build -f Dockerfile.temp --build-arg JAR_FILE=$JAR_FILE -t spring-app:latest .
+            docker run -d --name spring-app -p 8086:8086 spring-app:latest
+
+            rm Dockerfile.temp
 
             # -------------------------------
-            # Clean build caches to save space
+            # Clean caches
             # -------------------------------
             rm -rf ~/.m2/repository || true
             rm -rf ~/.gradle/caches/ || true
@@ -118,16 +111,23 @@ jobs:
           echo "Waiting for app on port 8086..."
           MAX_RETRIES=30
           COUNT=0
-          until curl -s http://${{ secrets.VM_IP }}:8086/actuator/health || [ $COUNT -ge $MAX_RETRIES ]; do
+          SUCCESS=0
+          until [ $COUNT -ge $MAX_RETRIES ]; do
+            if curl -s http://${{ secrets.VM_IP }}:8086/actuator/health | grep -q '"status":"UP"'; then
+              SUCCESS=1
+              break
+            fi
             echo "App not ready yet. Retrying in 5s..."
             sleep 5
             COUNT=$((COUNT+1))
           done
-          if [ $COUNT -ge $MAX_RETRIES ]; then
+
+          if [ $SUCCESS -ne 1 ]; then
             echo "App did not start in time. Fetching container logs..."
             ssh -o StrictHostKeyChecking=no ${{ secrets.VM_USER }}@${{ secrets.VM_IP }} "docker logs spring-app || true"
             exit 1
           fi
+
           echo "App is up and running!"
 
       - name: Run tests on VM
