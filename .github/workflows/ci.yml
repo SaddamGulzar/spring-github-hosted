@@ -20,7 +20,7 @@ jobs:
           chmod 600 ~/.ssh/id_rsa
           ssh-keyscan -H ${{ secrets.VM_IP }} >> ~/.ssh/known_hosts
 
-      # Deploy and build on VM
+      # Build and deploy on VM
       - name: Build and Deploy on VM
         run: |
           ssh -o StrictHostKeyChecking=no ${{ secrets.VM_USER }}@${{ secrets.VM_IP }} << 'EOF'
@@ -35,13 +35,13 @@ jobs:
 
             # Navigate to project directory (clone if not exists)
             if [ ! -d spring-app ]; then
-              git clone <your-repo-url> spring-app
+              git clone https://github.com/username/spring-app.git spring-app
             fi
             cd spring-app
             git fetch --all
             git reset --hard origin/main
 
-            # Detect build tool
+            # Detect build tool and build JAR
             if [ -f "pom.xml" ]; then
               echo "Using Maven"
               ./mvnw clean package -DskipTests
