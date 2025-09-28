@@ -1,8 +1,9 @@
-name: CI/CD for Spring App
+name: CI/CD Pipeline
 
 on:
   push:
-    branches: [ "main" ]
+    branches:
+      - main
   workflow_dispatch:
 
 jobs:
@@ -10,26 +11,29 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Setup SSH Key
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup SSH
         run: |
           mkdir -p ~/.ssh
           echo "${{ secrets.VM_SSH_KEY }}" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
-          ssh-keyscan -H ${{ secrets.VM_IP }} >> ~/.ssh/known_hosts
+          ssh-keyscan -H ${{ secrets.VM_HOST }} >> ~/.ssh/known_hosts
 
       - name: Build & Deploy on VM
         run: |
-          ssh -o StrictHostKeyChecking=no ${{ secrets.VM_USER }}@${{ secrets.VM_IP }} << 'EOF'
+          ssh -i ~/.ssh/id_rsa ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }} << 'EOF'
             set -e
             APP_NAME="spring-app"
             APP_PORT=8086
-            PROJECT_DIR=~/spring-github-hosted
+            PROJECT_DIR=~/spring-app
 
             # -------------------------------
-            # Prepare project directory
+            # Prepare project
             # -------------------------------
             if [ ! -d "$PROJECT_DIR" ]; then
-              git clone git@github.com:SaddamGulzar/spring-github-hosted.git $PROJECT_DIR
+              git clone git@github.com:<your-username>/<your-repo>.git $PROJECT_DIR
             fi
             cd $PROJECT_DIR
             git fetch --all
@@ -40,7 +44,7 @@ jobs:
             [ -f "./gradlew" ] && chmod +x ./gradlew
 
             # -------------------------------
-            # Detect build tool and build JAR
+            # Build JAR
             # -------------------------------
             if [ -f "pom.xml" ] || [ -f "mvnw" ]; then
               ./mvnw clean package -DskipTests
@@ -52,26 +56,18 @@ jobs:
               echo "No Maven/Gradle build file found!"
               exit 1
             fi
-
-            echo "JAR built at: $JAR_FILE"
+            echo "Built JAR: $JAR_FILE"
 
             # -------------------------------
-            # Stop old container if exists
+            # Stop old container
             # -------------------------------
-            if docker ps -aq -f name=$APP_NAME; then
-              docker rm -f $APP_NAME || true
-            fi
-
-            # Free port if in use
-            if lsof -t -i :$APP_PORT; then
-              sudo lsof -t -i :$APP_PORT | xargs sudo kill -9 || true
-            fi
+            docker stop $APP_NAME || true
+            docker rm $APP_NAME || true
 
             # -------------------------------
             # Build Docker image
             # -------------------------------
             cp $JAR_FILE app.jar
-
             cat > Dockerfile.temp << DOCKER_EOF
             FROM eclipse-temurin:17-jdk-alpine
             WORKDIR /app
@@ -83,36 +79,26 @@ jobs:
             docker build -f Dockerfile.temp -t $APP_NAME:latest .
             rm Dockerfile.temp
 
-            docker run -d --name $APP_NAME -p $APP_PORT:$APP_PORT $APP_NAME:latest || true
-
-            echo "🚀 Checking running containers..."
-            docker ps -a
-
-            # If container exited, show logs
-            if [ "$(docker inspect -f '{{.State.Status}}' $APP_NAME)" != "running" ]; then
-              echo "❌ Container failed to start. Logs:"
-              docker logs $APP_NAME || true
-              exit 1
-            fi
-
             # -------------------------------
-            # Cleanup old Docker resources
+            # Start new container
             # -------------------------------
-            CURRENT_IMAGE_ID=$(docker images -q ${APP_NAME}:latest || true)
-            CURRENT_CONTAINER_ID=$(docker ps -q --filter "name=${APP_NAME}" || true)
+            docker run -d --name $APP_NAME -p $APP_PORT:8080 $APP_NAME:latest
 
-            echo "Keeping container: $CURRENT_CONTAINER_ID"
-            echo "Keeping image: $CURRENT_IMAGE_ID"
+            echo "✅ Deploy completed. Container is running."
+            
+            # -------------------------------
+            # Cleanup old images & containers
+            # -------------------------------
+            CURRENT_IMAGE=$(docker images -q $APP_NAME:latest)
+            CURRENT_CONTAINER=$(docker ps -q --filter "name=$APP_NAME")
 
-            docker ps -a --filter "name=${APP_NAME}" --format "{{.ID}}" | grep -v "$CURRENT_CONTAINER_ID" | xargs -r docker rm -f
-            docker images ${APP_NAME} --format "{{.ID}}" | grep -v "$CURRENT_IMAGE_ID" | xargs -r docker rmi -f
+            docker ps -a --filter "name=$APP_NAME" --format "{{.ID}}" | grep -v "$CURRENT_CONTAINER" | xargs -r docker rm -f
+            docker images $APP_NAME --format "{{.ID}}" | grep -v "$CURRENT_IMAGE" | xargs -r docker rmi -f
 
             docker image prune -f
             docker container prune -f
             docker volume prune -f
             docker network prune -f
-
-            echo "✅ Cleanup completed. Current build is still running."
           EOF
 
   test:
@@ -127,7 +113,7 @@ jobs:
           COUNT=0
           SUCCESS=0
           until [ $COUNT -ge $MAX_RETRIES ]; do
-            if curl -s http://${{ secrets.VM_IP }}:8086/actuator/health | grep -q '"status":"UP"'; then
+            if curl -s http://${{ secrets.VM_HOST }}:8086/actuator/health | grep -q '"status":"UP"'; then
               SUCCESS=1
               break
             fi
@@ -137,8 +123,8 @@ jobs:
           done
 
           if [ $SUCCESS -ne 1 ]; then
-            echo "❌ App failed to start. Fetching logs..."
-            ssh -o StrictHostKeyChecking=no ${{ secrets.VM_USER }}@${{ secrets.VM_IP }} "docker logs spring-app || true"
+            echo "❌ App failed to start. Fetching container logs..."
+            ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_rsa ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }} "docker logs spring-app || true"
             exit 1
           fi
 
