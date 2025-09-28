@@ -26,6 +26,13 @@ jobs:
           ssh -o StrictHostKeyChecking=no ${{ secrets.VM_USER }}@${{ secrets.VM_IP }} << EOF
             set -e
 
+            # Install OpenJDK 17 if not installed
+            if ! command -v java &> /dev/null; then
+              echo "Installing OpenJDK 17..."
+              sudo apt-get update
+              sudo apt-get install -y openjdk-17-jdk
+            fi
+
             # Set JAVA_HOME and PATH
             export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
             export PATH=\$JAVA_HOME/bin:\$PATH
