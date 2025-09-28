@@ -25,12 +25,25 @@ jobs:
             set -e
 
             # -------------------------------
-            # Install required packages
+            # Install required packages if missing
             # -------------------------------
-            sudo apt-get update
-            sudo apt-get install -y openjdk-17-jdk docker.io unzip wget curl git
+            command -v wget >/dev/null || sudo apt-get install -y wget
+            command -v curl >/dev/null || sudo apt-get install -y curl
+            command -v git >/dev/null || sudo apt-get install -y git
+            command -v java >/dev/null || sudo apt-get install -y openjdk-17-jdk
+
             export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
             export PATH=$JAVA_HOME/bin:$PATH
+
+            # -------------------------------
+            # Install Docker safely
+            # -------------------------------
+            if ! command -v docker &> /dev/null; then
+              echo "Installing Docker..."
+              curl -fsSL https://get.docker.com -o get-docker.sh
+              sh get-docker.sh
+              sudo usermod -aG docker $USER
+            fi
 
             # -------------------------------
             # Prepare project directory
@@ -66,7 +79,7 @@ jobs:
             echo "Using JAR: $JAR_FILE"
 
             # -------------------------------
-            # Cleanup old spring-app container/image if exists
+            # Cleanup old spring-app container/image only
             # -------------------------------
             if docker ps -aq -f name=spring-app; then
               docker rm -f spring-app || true
@@ -75,7 +88,9 @@ jobs:
               docker rmi -f spring-app:latest || true
             fi
 
+            # -------------------------------
             # Free port 8086 if in use
+            # -------------------------------
             if lsof -t -i :8086; then
               sudo lsof -t -i :8086 | xargs sudo kill -9 || true
             fi
