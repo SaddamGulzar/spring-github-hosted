@@ -1,4 +1,4 @@
-name: Java CI/CD with Docker (Build on VM)
+name: Java CI/CD with Docker (Build on VM with SSH key)
 
 on:
   push:
@@ -12,7 +12,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v3
 
-      # Setup SSH
+      # Setup SSH for VM
       - name: Set up SSH key
         run: |
           mkdir -p ~/.ssh
@@ -26,6 +26,12 @@ jobs:
           ssh -o StrictHostKeyChecking=no ${{ secrets.VM_USER }}@${{ secrets.VM_IP }} << 'EOF'
             set -e
 
+            # Make sure SSH key exists for GitHub
+            mkdir -p ~/.ssh
+            echo "${{ secrets.VM_SSH_KEY }}" > ~/.ssh/id_rsa
+            chmod 600 ~/.ssh/id_rsa
+            ssh-keyscan github.com >> ~/.ssh/known_hosts
+
             # Install Docker if not installed
             if ! command -v docker &> /dev/null; then
               echo "Installing Docker..."
@@ -34,10 +40,10 @@ jobs:
             fi
 
             # Navigate to project directory (clone if not exists)
-            if [ ! -d spring-app ]; then
-              git clone https://github.com/username/spring-app.git spring-app
+            if [ ! -d spring-github-hosted ]; then
+              git clone git@github.com:username/spring-github-hosted.git spring-github-hosted
             fi
-            cd spring-app
+            cd spring-github-hosted
             git fetch --all
             git reset --hard origin/main
 
@@ -101,7 +107,7 @@ jobs:
       - name: Run tests on VM
         run: |
           ssh -o StrictHostKeyChecking=no ${{ secrets.VM_USER }}@${{ secrets.VM_IP }} << 'EOF'
-            cd spring-app
+            cd spring-github-hosted
             if [ -f "pom.xml" ]; then
               ./mvnw test
             elif [ -f "build.gradle" ] || [ -f "build.gradle.kts" ]; then
