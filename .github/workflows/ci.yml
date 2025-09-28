@@ -1,90 +1,115 @@
-name: Java CI/CD with Docker
+name: Java CI/CD with Docker (VM-Build Only)
 
 on:
   push:
-    branches:
-      - main
+    branches: ["main"]
 
 jobs:
-  deploy:
+  build-deploy:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Setup SSH
+      - name: Setup SSH Key
         run: |
-          mkdir -p $HOME/.ssh
-          echo "${{ secrets.VM_SSH_KEY }}" > $HOME/.ssh/id_rsa
-          chmod 600 $HOME/.ssh/id_rsa
+          mkdir -p ~/.ssh
+          echo "${{ secrets.VM_SSH_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H ${{ secrets.VM_IP }} >> ~/.ssh/known_hosts
 
-      - name: Deploy to VM
+      - name: Build & Deploy on VM
         run: |
-          ssh -i $HOME/.ssh/id_rsa -o StrictHostKeyChecking=no ${{ secrets.VM_USER }}@${{ secrets.VM_IP }} << 'EOF'
+          ssh -o StrictHostKeyChecking=no ${{ secrets.VM_USER }}@${{ secrets.VM_IP }} << 'EOF'
             set -e
-            APP_NAME="spring-app"
-            APP_PORT=8086
-            PROJECT_DIR=~/spring-github-hosted
 
+            # -------------------------------
+            # Install required packages
+            # -------------------------------
+            command -v wget >/dev/null || sudo apt-get install -y wget
+            command -v curl >/dev/null || sudo apt-get install -y curl
+            command -v git >/dev/null || sudo apt-get install -y git
+            command -v java >/dev/null || sudo apt-get install -y openjdk-17-jdk
+            command -v docker >/dev/null || (curl -fsSL https://get.docker.com -o get-docker.sh && sh get-docker.sh && sudo usermod -aG docker $USER)
+
+            export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+            export PATH=$JAVA_HOME/bin:$PATH
+
+            # -------------------------------
+            # Prepare project directory
+            # -------------------------------
+            PROJECT_DIR=~/spring-github-hosted
+            if [ ! -d "$PROJECT_DIR" ]; then
+              git clone git@github.com:SaddamGulzar/spring-github-hosted.git $PROJECT_DIR
+            fi
             cd $PROJECT_DIR
             git fetch --all
             git reset --hard origin/main
 
-            LAST_COMMIT_FILE=".last_deployed_commit"
-            CURRENT_COMMIT=$(git rev-parse HEAD)
+            # Make wrappers executable
+            [ -f "./mvnw" ] && chmod +x ./mvnw
+            [ -f "./gradlew" ] && chmod +x ./gradlew
 
-            if [ -f "$LAST_COMMIT_FILE" ] && [ "$(cat $LAST_COMMIT_FILE)" = "$CURRENT_COMMIT" ]; then
-              echo "No code changes. Skipping build."
+            # -------------------------------
+            # Detect build tool and build JAR
+            # -------------------------------
+            if [ -f "pom.xml" ] || [ -f "mvnw" ]; then
+              ./mvnw clean package -DskipTests
+              JAR_FILE=$(ls target/*.jar | head -n 1)
+            elif [ -f "build.gradle" ] || [ -f "build.gradle.kts" ] || [ -f "gradlew" ]; then
+              ./gradlew clean build -x test
+              JAR_FILE=$(ls build/libs/*.jar | head -n 1)
             else
-              echo "Building JAR..."
-              if [ -f "pom.xml" ] || [ -f "mvnw" ]; then
-                ./mvnw clean package -DskipTests
-                JAR_FILE=$(ls target/*.jar | head -n1)
-              elif [ -f "build.gradle" ] || [ -f "gradlew" ]; then
-                ./gradlew clean build -x test
-                JAR_FILE=$(ls build/libs/*.jar | head -n1)
-              else
-                echo "❌ No build file found!"
-                exit 1
-              fi
-
-              echo "Stopping old container..."
-              docker stop $APP_NAME || true
-              docker rm $APP_NAME || true
-
-              echo "Cleaning old Docker resources..."
-              CURRENT_IMAGE=$(docker images -q $APP_NAME:latest)
-              docker ps -a --filter "name=$APP_NAME" --format "{{.ID}}" | grep -v "$(docker ps -q --filter "name=$APP_NAME")" | xargs -r docker rm -f
-              docker images $APP_NAME --format "{{.ID}}" | grep -v "$CURRENT_IMAGE" | xargs -r docker rmi -f
-
-              echo "Building Docker image..."
-              cp $JAR_FILE app.jar
-              cat > Dockerfile.temp <<- DOCKER_EOF
-FROM eclipse-temurin:17-jdk-alpine
-WORKDIR /app
-COPY app.jar app.jar
-EXPOSE $APP_PORT
-ENTRYPOINT ["java","-jar","app.jar","--server.port=$APP_PORT"]
-DOCKER_EOF
-              docker build -f Dockerfile.temp -t $APP_NAME:latest .
-              rm Dockerfile.temp
-
-              echo "Starting container..."
-              docker run -d --name $APP_NAME -p $APP_PORT:8080 $APP_NAME:latest
-
-              echo "$CURRENT_COMMIT" > $LAST_COMMIT_FILE
+              echo "No Maven/Gradle build file found!"
+              exit 1
             fi
+
+            echo "JAR built at: $JAR_FILE"
+
+            # -------------------------------
+            # Stop old spring-app container if exists
+            # -------------------------------
+            if docker ps -aq -f name=spring-app; then
+              docker rm -f spring-app || true
+            fi
+
+            # Free port 8086 if in use
+            if lsof -t -i :8086; then
+              sudo lsof -t -i :8086 | xargs sudo kill -9 || true
+            fi
+
+            # -------------------------------
+            # Build lightweight Docker image
+            # -------------------------------
+            cat > Dockerfile.temp << 'DOCKER_EOF'
+            FROM openjdk:17-jdk-slim
+            ARG JAR_FILE
+            WORKDIR /app
+            COPY ${JAR_FILE} app.jar
+            EXPOSE 8086
+            ENTRYPOINT ["java","-jar","app.jar","--server.port=8086"]
+            DOCKER_EOF
+
+            docker build -f Dockerfile.temp --build-arg JAR_FILE=$JAR_FILE -t spring-app:latest .
+            docker run -d --name spring-app -p 8086:8086 spring-app:latest
+
+            rm Dockerfile.temp
+
+            # -------------------------------
+            # Clean caches
+            # -------------------------------
+            rm -rf ~/.m2/repository || true
+            rm -rf ~/.gradle/caches/ || true
+            sudo apt-get clean
           EOF
 
   test:
     runs-on: ubuntu-latest
-    needs: deploy
+    needs: build-deploy
 
     steps:
-      - name: Quick Health Check
+      - name: Wait for app to be ready
         run: |
-          MAX_RETRIES=10
+          echo "Waiting for app on port 8086..."
+          MAX_RETRIES=30
           COUNT=0
           SUCCESS=0
           until [ $COUNT -ge $MAX_RETRIES ]; do
@@ -92,15 +117,26 @@ DOCKER_EOF
               SUCCESS=1
               break
             fi
-            echo "Waiting for app... ($COUNT/$MAX_RETRIES)"
-            COUNT=$((COUNT+1))
+            echo "App not ready yet. Retrying in 5s..."
             sleep 5
+            COUNT=$((COUNT+1))
           done
 
           if [ $SUCCESS -ne 1 ]; then
-            echo "❌ App health check failed."
-            ssh -i $HOME/.ssh/id_rsa -o StrictHostKeyChecking=no ${{ secrets.VM_USER }}@${{ secrets.VM_IP }} "docker logs spring-app || true"
+            echo "App did not start in time. Fetching container logs..."
+            ssh -o StrictHostKeyChecking=no ${{ secrets.VM_USER }}@${{ secrets.VM_IP }} "docker logs spring-app || true"
             exit 1
           fi
 
-          echo "✅ App is running and healthy."
+          echo "App is up and running!"
+
+      #  - name: Run tests on VM
+      #    run: |
+      #     ssh -o StrictHostKeyChecking=no ${{ secrets.VM_USER }}@${{ secrets.VM_IP }} << EOF
+      #       cd ~/spring-github-hosted
+      #       if [ -f "pom.xml" ]; then
+      #         ./mvnw test
+      #       elif [ -f "build.gradle" ] || [ -f "build.gradle.kts" ]; then
+      #         ./gradlew test
+      #       fi
+      #     EOF
