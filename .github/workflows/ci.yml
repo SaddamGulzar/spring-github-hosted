@@ -1,13 +1,10 @@
-name: Java CI/CD with Docker
+name: Java CI/CD with Docker (Build on VM)
 
 on:
   push:
     branches: ["main"]
 
 jobs:
-  # -----------------------------
-  # Build and Deploy Job
-  # -----------------------------
   build-deploy:
     runs-on: ubuntu-latest
 
@@ -23,102 +20,71 @@ jobs:
           chmod 600 ~/.ssh/id_rsa
           ssh-keyscan -H ${{ secrets.VM_IP }} >> ~/.ssh/known_hosts
 
-      # Detect build tool
-      - name: Detect Build Tool
-        id: detect-build
-        run: |
-          if [ -f "mvnw" ] || [ -f "pom.xml" ]; then
-            echo "tool=maven" >> $GITHUB_OUTPUT
-          elif [ -f "gradlew" ] || [ -f "build.gradle" ] || [ -f "build.gradle.kts" ]; then
-            echo "tool=gradle" >> $GITHUB_OUTPUT
-          else
-            echo "No Maven/Gradle build file found!"
-            exit 1
-          fi
-
-      # Build Java app
-      - name: Build Java Application
-        id: build-app
-        run: |
-          if [ "${{ steps.detect-build.outputs.tool }}" = "maven" ]; then
-            mvn clean package -DskipTests
-            JAR_FILE=$(ls target/*.jar | head -n 1)
-            echo "JAR_PATH=$JAR_FILE" >> $GITHUB_OUTPUT
-          else
-            ./gradlew clean build -x test
-            JAR_FILE=$(ls build/libs/*.jar | head -n 1)
-            echo "JAR_PATH=$JAR_FILE" >> $GITHUB_OUTPUT
-          fi
-
-      # Build Docker image
-      - name: Build Docker Image
-        run: |
-          echo "Using JAR: ${{ steps.build-app.outputs.JAR_PATH }}"
-          docker build --build-arg JAR_FILE=${{ steps.build-app.outputs.JAR_PATH }} -t spring-app:latest .
-
-      # Deploy to VM: cleanup old container/image
-      - name: Deploy to VM - cleanup
+      # Deploy and build on VM
+      - name: Build and Deploy on VM
         run: |
           ssh -o StrictHostKeyChecking=no ${{ secrets.VM_USER }}@${{ secrets.VM_IP }} << 'EOF'
+            set -e
+
+            # Install Docker if not installed
             if ! command -v docker &> /dev/null; then
               echo "Installing Docker..."
-              sudo apt-get update && sudo apt-get install -y docker.io
+              sudo apt-get update
+              sudo apt-get install -y docker.io
             fi
+
+            # Navigate to project directory (clone if not exists)
+            if [ ! -d spring-app ]; then
+              git clone <your-repo-url> spring-app
+            fi
+            cd spring-app
+            git fetch --all
+            git reset --hard origin/main
+
+            # Detect build tool
+            if [ -f "pom.xml" ]; then
+              echo "Using Maven"
+              ./mvnw clean package -DskipTests
+              JAR_FILE=$(ls target/*.jar | head -n 1)
+            elif [ -f "build.gradle" ] || [ -f "build.gradle.kts" ]; then
+              echo "Using Gradle"
+              ./gradlew clean build -x test
+              JAR_FILE=$(ls build/libs/*.jar | head -n 1)
+            else
+              echo "No build file found!"
+              exit 1
+            fi
+
+            # Stop & remove old container
             if [ "$(docker ps -aq -f name=spring-app)" ]; then
               docker rm -f spring-app || true
             fi
+
+            # Remove old image if exists
             if [ "$(docker images -q spring-app:latest)" ]; then
               docker rmi -f spring-app:latest || true
             fi
-          EOF
 
-      # Stream Docker image directly to VM
-      - name: Transfer Docker image to VM
-        run: |
-          docker save spring-app:latest | ssh -o StrictHostKeyChecking=no ${{ secrets.VM_USER }}@${{ secrets.VM_IP }} 'docker load'
+            # Build Docker image
+            docker build --build-arg JAR_FILE=$JAR_FILE -t spring-app:latest .
 
-      # Free port 8086 on VM
-      - name: Free port 8086
-        run: |
-          ssh -o StrictHostKeyChecking=no ${{ secrets.VM_USER }}@${{ secrets.VM_IP }} << 'EOF'
-            echo "Checking if port 8086 is in use..."
-            if lsof -i :8086; then
-              echo "Port 8086 is busy. Stopping processes using it..."
+            # Free port 8086 if busy
+            if lsof -t -i :8086; then
               sudo lsof -t -i :8086 | xargs sudo kill -9 || true
-            else
-              echo "Port 8086 is free."
             fi
-          EOF
 
-      # Run Docker container
-      - name: Run Docker container
-        run: |
-          ssh -o StrictHostKeyChecking=no ${{ secrets.VM_USER }}@${{ secrets.VM_IP }} << 'EOF'
+            # Run Docker container
             docker run -d --name spring-app -p 8086:8086 spring-app:latest
           EOF
 
-      # Cleanup build caches locally
-      - name: Cleanup build caches
-        run: |
-          rm -rf ~/.m2/repository || true
-          rm -rf ~/.gradle/caches/ || true
-          sudo apt-get clean
-
-  # -----------------------------
-  # Test Job (after deployment)
-  # -----------------------------
   test:
     runs-on: ubuntu-latest
     needs: build-deploy
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v3
-
-      # Wait for app to be ready
-      - name: Wait for app on port 8086
+      - name: Wait for app to be ready
         run: |
-          echo "Waiting for the app to start on port 8086..."
+          echo "Waiting for app on port 8086..."
           MAX_RETRIES=30
           COUNT=0
           until curl -s http://${{ secrets.VM_IP }}:8086/actuator/health || [ $COUNT -ge $MAX_RETRIES ]; do
@@ -132,22 +98,13 @@ jobs:
           fi
           echo "App is up and running!"
 
-      # Detect build tool again
-      - name: Detect Build Tool
-        id: detect-build
+      - name: Run tests on VM
         run: |
-          if [ -f "mvnw" ] || [ -f "pom.xml" ]; then
-            echo "tool=maven" >> $GITHUB_OUTPUT
-          elif [ -f "gradlew" ] || [ -f "build.gradle" ] || [ -f "build.gradle.kts" ]; then
-            echo "tool=gradle" >> $GITHUB_OUTPUT
-          else
-            echo "No Maven/Gradle build file found!"
-            exit 1
-          fi
-
-      - name: Run Tests
-        run: |
-          if [ "${{ steps.detect-build.outputs.tool }}" = "maven" ]; then
-            mvn test
-          else
-            ./gradlew test
+          ssh -o StrictHostKeyChecking=no ${{ secrets.VM_USER }}@${{ secrets.VM_IP }} << 'EOF'
+            cd spring-app
+            if [ -f "pom.xml" ]; then
+              ./mvnw test
+            elif [ -f "build.gradle" ] || [ -f "build.gradle.kts" ]; then
+              ./gradlew test
+            fi
+          EOF
