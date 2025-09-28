@@ -23,12 +23,13 @@ jobs:
       # Build and deploy on VM
       - name: Build and Deploy on VM
         run: |
-          ssh -o StrictHostKeyChecking=no ${{ secrets.VM_USER }}@${{ secrets.VM_IP }} << 'EOF'
+          ssh -o StrictHostKeyChecking=no ${{ secrets.VM_USER }}@${{ secrets.VM_IP }} << EOF
             set -e
 
-            # Set JAVA_HOME for Maven/Gradle
+            # Set JAVA_HOME and PATH
             export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
-            export PATH=$JAVA_HOME/bin:$PATH
+            export PATH=\$JAVA_HOME/bin:\$PATH
+            java -version
 
             # Ensure SSH key exists for GitHub
             mkdir -p ~/.ssh
@@ -63,28 +64,28 @@ jobs:
             if [ -f "pom.xml" ]; then
               echo "Using Maven"
               ./mvnw clean package -DskipTests
-              JAR_FILE=$(ls target/*.jar | head -n 1)
+              JAR_FILE=\$(ls target/*.jar | head -n 1)
             elif [ -f "build.gradle" ] || [ -f "build.gradle.kts" ]; then
               echo "Using Gradle"
               ./gradlew clean build -x test
-              JAR_FILE=$(ls build/libs/*.jar | head -n 1)
+              JAR_FILE=\$(ls build/libs/*.jar | head -n 1)
             else
               echo "No build file found!"
               exit 1
             fi
 
             # Stop & remove old container
-            if [ "$(docker ps -aq -f name=spring-app)" ]; then
+            if [ "\$(docker ps -aq -f name=spring-app)" ]; then
               docker rm -f spring-app || true
             fi
 
             # Remove old image if exists
-            if [ "$(docker images -q spring-app:latest)" ]; then
+            if [ "\$(docker images -q spring-app:latest)" ]; then
               docker rmi -f spring-app:latest || true
             fi
 
             # Build Docker image
-            docker build --build-arg JAR_FILE=$JAR_FILE -t spring-app:latest .
+            docker build --build-arg JAR_FILE=\$JAR_FILE -t spring-app:latest .
 
             # Free port 8086 if busy
             if lsof -t -i :8086; then
@@ -118,7 +119,7 @@ jobs:
 
       - name: Run tests on VM
         run: |
-          ssh -o StrictHostKeyChecking=no ${{ secrets.VM_USER }}@${{ secrets.VM_IP }} << 'EOF'
+          ssh -o StrictHostKeyChecking=no ${{ secrets.VM_USER }}@${{ secrets.VM_IP }} << EOF
             cd spring-github-hosted
             if [ -f "pom.xml" ]; then
               ./mvnw test
