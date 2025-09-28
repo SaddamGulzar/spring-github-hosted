@@ -1,98 +1,57 @@
-name: Java CI with Docker on Self-Hosted Runner
+name: Java CI with Docker
 
 on:
   push:
     branches: ["main"]
 
 jobs:
-  build-and-deploy:
-    runs-on: self-hosted
+  build:
+    runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout code
+      - name: Checkout repository
         uses: actions/checkout@v3
 
-      - name: Ensure required components are installed
-        run: |
-          set -e
-          wait_for_apt() {
-            while sudo fuser /var/lib/dpkg/lock >/dev/null 2>&1 || sudo fuser /var/lib/apt/lists/lock >/dev/null 2>&1; do
-              echo "Waiting for other apt/dpkg processes to finish..."
-              sleep 3
-            done
-          }
-          wait_for_apt
-          sudo apt-get update
-          # Java
-          if ! command -v java &> /dev/null || ! java -version 2>&1 | grep -q "21"; then
-            sudo apt-get install -y openjdk-21-jdk
-          fi
-          export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
-          export PATH=$JAVA_HOME/bin:$PATH
-          # Maven
-          if ! command -v mvn &> /dev/null; then
-            sudo apt-get install -y maven
-          fi
-          # Gradle (temporary)
-          if ! command -v gradle &> /dev/null; then
-            wget https://services.gradle.org/distributions/gradle-8.4-bin.zip -P /tmp
-            sudo unzip -o /tmp/gradle-8.4-bin.zip -d /opt/gradle
-            rm /tmp/gradle-8.4-bin.zip
-          fi
-          export PATH=/opt/gradle/gradle-8.4/bin:$PATH
-          # Docker
-          if ! command -v docker &> /dev/null; then
-            sudo apt-get install -y docker.io
-            sudo systemctl enable docker
-            sudo systemctl start docker
-          fi
-          # Utilities
-          for pkg in wget unzip lsof curl; do
-            if ! command -v $pkg &> /dev/null; then
-              sudo apt-get install -y $pkg
-            fi
-          done
+      - name: Set up JDK 17
+        uses: actions/setup-java@v3
+        with:
+          distribution: 'temurin'
+          java-version: '17'
 
-      - name: Build Java project
-        run: |
-          export PATH=/opt/gradle/gradle-8.4/bin:$PATH
-          mkdir -p docker_app
-          if [ -f "build.gradle" ] || [ -f "build.gradle.kts" ]; then
-              echo "Detected Gradle project. Building..."
-              gradle clean build -x test --no-daemon
-              cp build/libs/*.jar docker_app/
-          elif [ -f "pom.xml" ]; then
-              echo "Detected Maven project. Building..."
-              mvn clean package -DskipTests
-              cp target/*.jar docker_app/
-          else
-              echo "No recognized build file found."
-              exit 1
-          fi
+      - name: Build with Maven
+        run: mvn clean package -DskipTests
 
       - name: Build Docker image
-        run: docker build -t spring-petclinic:latest .
+        run: docker build -t java-app:latest .
 
-      - name: Stop and remove existing container if any
+      - name: Save Docker image as artifact
+        run: docker save java-app:latest -o java-app.tar
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: java-app
+          path: java-app.tar
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: java-app
+          path: .
+
+      - name: Copy Docker image to VM
         run: |
-          CONTAINER_NAME="spring-petclinic"
-          if [ "$(docker ps -aq -f name=$CONTAINER_NAME)" ]; then
-            docker rm -f $CONTAINER_NAME
-          fi
+          scp -o StrictHostKeyChecking=no -i ~/.ssh/id_rsa java-app.tar ubuntu@100.27.198.192:/home/ubuntu/
 
-      - name: Run Docker container
-        run: docker run -d --name spring-petclinic -p 8084:8084 spring-petclinic:latest
-
-      - name: Wait for application to be healthy
+      - name: Load and run container on VM
         run: |
-          echo "Waiting for app to start on port 8084..."
-          COUNT=0
-          until curl -s http://localhost:8084/actuator/health | grep -q "UP"; do
-              sleep 2
-              COUNT=$((COUNT+1))
-              if [ $COUNT -ge 60 ]; then
-                  echo "Application failed to start within 120s."
-                  docker logs spring-petclinic
-                  exit 1
-              fi
-          done
-          echo "Application started successfully!"
+          ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_rsa ubuntu@100.27.198.192 << 'EOF'
+          docker load -i /home/ubuntu/java-app.tar
+          docker rm -f java-app || true
+          docker run -d --name java-app -p 8086:8086 java-app:latest
+          EOF

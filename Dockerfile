@@ -1,14 +1,14 @@
-# Use OpenJDK 21 as base
-FROM openjdk:21-jdk
+# Use OpenJDK base image
+FROM openjdk:17-jdk-slim
 
-# Set working directory
+# Set working directory inside container
 WORKDIR /app
 
-# Copy JAR dynamically (workflow will ensure the JAR is in ./docker_app folder)
-COPY docker_app/*.jar app.jar
+# Copy the built jar file into container
+COPY target/*.jar app.jar
 
-# Expose the app port
-EXPOSE 8084
+# Expose port 8086
+EXPOSE 8086
 
-# Run Spring Boot app
-ENTRYPOINT ["java","-jar","/app/app.jar","--server.port=8084","--server.address=0.0.0.0"]
+# Run the application
+ENTRYPOINT ["java", "-jar", "app.jar"]
