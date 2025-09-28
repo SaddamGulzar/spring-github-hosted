@@ -61,13 +61,13 @@ jobs:
 
               echo "Building Docker image..."
               cp $JAR_FILE app.jar
-              cat > Dockerfile.temp << DOCKER_EOF
-              FROM eclipse-temurin:17-jdk-alpine
-              WORKDIR /app
-              COPY app.jar app.jar
-              EXPOSE $APP_PORT
-              ENTRYPOINT ["java","-jar","app.jar","--server.port=$APP_PORT"]
-              DOCKER_EOF
+              cat > Dockerfile.temp <<- DOCKER_EOF
+FROM eclipse-temurin:17-jdk-alpine
+WORKDIR /app
+COPY app.jar app.jar
+EXPOSE $APP_PORT
+ENTRYPOINT ["java","-jar","app.jar","--server.port=$APP_PORT"]
+DOCKER_EOF
               docker build -f Dockerfile.temp -t $APP_NAME:latest .
               rm Dockerfile.temp
 
