@@ -70,19 +70,30 @@ jobs:
             # -------------------------------
             # Build Docker image
             # -------------------------------
+            cp $JAR_FILE app.jar
+
             cat > Dockerfile.temp << DOCKER_EOF
             FROM eclipse-temurin:17-jdk-alpine
-            ARG JAR_FILE
             WORKDIR /app
-            COPY \${JAR_FILE} app.jar
+            COPY app.jar app.jar
             EXPOSE $APP_PORT
             ENTRYPOINT ["java","-jar","app.jar","--server.port=$APP_PORT"]
             DOCKER_EOF
 
-            docker build -f Dockerfile.temp --build-arg JAR_FILE=$JAR_FILE -t $APP_NAME:latest .
+            docker build -f Dockerfile.temp -t $APP_NAME:latest .
             rm Dockerfile.temp
 
-            docker run -d --name $APP_NAME -p $APP_PORT:$APP_PORT $APP_NAME:latest
+            docker run -d --name $APP_NAME -p $APP_PORT:$APP_PORT $APP_NAME:latest || true
+
+            echo "🚀 Checking running containers..."
+            docker ps -a
+
+            # If container exited, show logs
+            if [ "$(docker inspect -f '{{.State.Status}}' $APP_NAME)" != "running" ]; then
+              echo "❌ Container failed to start. Logs:"
+              docker logs $APP_NAME || true
+              exit 1
+            fi
 
             # -------------------------------
             # Cleanup old Docker resources
