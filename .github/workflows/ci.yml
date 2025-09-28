@@ -64,11 +64,9 @@ jobs:
             # Detect build tool and build JAR
             # -------------------------------
             if [ -f "pom.xml" ] || [ -f "mvnw" ]; then
-              BUILD_TOOL="maven"
               ./mvnw clean package -DskipTests
               JAR_FILE=$(ls target/*.jar | head -n 1)
             elif [ -f "build.gradle" ] || [ -f "build.gradle.kts" ] || [ -f "gradlew" ]; then
-              BUILD_TOOL="gradle"
               ./gradlew clean build -x test
               JAR_FILE=$(ls build/libs/*.jar | head -n 1)
             else
@@ -76,7 +74,7 @@ jobs:
               exit 1
             fi
 
-            echo "Using JAR: $JAR_FILE"
+            echo "JAR built at: $JAR_FILE"
 
             # -------------------------------
             # Cleanup old spring-app container/image only
@@ -99,11 +97,7 @@ jobs:
             # Build Docker image and run container
             # -------------------------------
             docker build --build-arg JAR_FILE=$JAR_FILE -t spring-app:latest .
-            docker run -d \
-              --name spring-app \
-              -p 8086:8086 \
-              -e SERVER_PORT=8086 \
-              spring-app:latest || \
+            docker run -d --name spring-app -p 8086:8086 spring-app:latest || \
             (echo "Container failed. Logs:" && docker logs spring-app && exit 1)
 
             # -------------------------------
