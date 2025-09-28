@@ -47,6 +47,14 @@ jobs:
             git fetch --all
             git reset --hard origin/main
 
+            # Make wrappers executable
+            if [ -f "./mvnw" ]; then
+              chmod +x ./mvnw
+            fi
+            if [ -f "./gradlew" ]; then
+              chmod +x ./gradlew
+            fi
+
             # Detect build tool and build JAR
             if [ -f "pom.xml" ]; then
               echo "Using Maven"
