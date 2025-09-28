@@ -1,53 +1,61 @@
-deploy:
-  runs-on: ubuntu-latest
-  steps:
-    - name: Checkout repo
-      uses: actions/checkout@v4
+name: CI/CD for Spring App
 
-    - name: Build Docker image
-      run: docker build -t spring-petclinic:latest .
+on:
+  push:
+    branches: [ "main" ]
 
-    - name: Run container
-      run: |
-        docker stop spring-petclinic || true
-        docker rm spring-petclinic || true
-        docker run -d --name spring-petclinic -p 8086:8080 spring-petclinic:latest
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
 
-    - name: Health check
-      run: |
-        echo "Waiting for app on port 8086..."
-        MAX_RETRIES=30
-        COUNT=0
-        until curl -s http://localhost:8086/actuator/health || [ $COUNT -ge $MAX_RETRIES ]; do
-          echo "App not ready yet. Retrying in 5s..."
-          COUNT=$((COUNT+1))
-          sleep 5
-        done
-        if [ $COUNT -ge $MAX_RETRIES ]; then
-          echo "❌ App failed to start."
-          exit 1
-        fi
-        echo "✅ App is running."
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
 
-    - name: Cleanup old Docker resources
-      run: |
-        APP_NAME="spring-petclinic"
-        CURRENT_IMAGE_ID=$(docker images -q ${APP_NAME}:latest || true)
-        CURRENT_CONTAINER_ID=$(docker ps -q --filter "name=${APP_NAME}" || true)
+      - name: Build Docker image
+        run: docker build -t spring-petclinic:latest .
 
-        echo "Keeping container: $CURRENT_CONTAINER_ID"
-        echo "Keeping image: $CURRENT_IMAGE_ID"
+      - name: Run container
+        run: |
+          docker stop spring-petclinic || true
+          docker rm spring-petclinic || true
+          docker run -d --name spring-petclinic -p 8086:8080 spring-petclinic:latest
 
-        # Stop and remove old containers (not the current one)
-        docker ps -a --filter "name=${APP_NAME}" --format "{{.ID}}" | grep -v "$CURRENT_CONTAINER_ID" | xargs -r docker rm -f
+      - name: Health check
+        run: |
+          echo "Waiting for app on port 8086..."
+          MAX_RETRIES=30
+          COUNT=0
+          until curl -s http://localhost:8086/actuator/health || [ $COUNT -ge $MAX_RETRIES ]; do
+            echo "App not ready yet. Retrying in 5s..."
+            COUNT=$((COUNT+1))
+            sleep 5
+          done
+          if [ $COUNT -ge $MAX_RETRIES ]; then
+            echo "❌ App failed to start."
+            exit 1
+          fi
+          echo "✅ App is running."
 
-        # Remove old images (not the current one)
-        docker images ${APP_NAME} --format "{{.ID}}" | grep -v "$CURRENT_IMAGE_ID" | xargs -r docker rmi -f
+      - name: Cleanup old Docker resources
+        run: |
+          APP_NAME="spring-petclinic"
+          CURRENT_IMAGE_ID=$(docker images -q ${APP_NAME}:latest || true)
+          CURRENT_CONTAINER_ID=$(docker ps -q --filter "name=${APP_NAME}" || true)
 
-        # Prune dangling images/volumes/networks
-        docker image prune -f
-        docker container prune -f
-        docker volume prune -f
-        docker network prune -f
+          echo "Keeping container: $CURRENT_CONTAINER_ID"
+          echo "Keeping image: $CURRENT_IMAGE_ID"
 
-        echo "✅ Cleanup completed. Current build is still running."
+          # Stop/remove old containers (except current)
+          docker ps -a --filter "name=${APP_NAME}" --format "{{.ID}}" | grep -v "$CURRENT_CONTAINER_ID" | xargs -r docker rm -f
+
+          # Remove old images (except current)
+          docker images ${APP_NAME} --format "{{.ID}}" | grep -v "$CURRENT_IMAGE_ID" | xargs -r docker rmi -f
+
+          # Prune dangling resources
+          docker image prune -f
+          docker container prune -f
+          docker volume prune -f
+          docker network prune -f
+
+          echo "✅ Cleanup completed. Current build is still running."
